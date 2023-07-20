@@ -83,6 +83,10 @@ class Process3DFLAIR():
         self.subject_normalised_directory = self.subject_directory_root + 'normalised_nifti/'
         os.makedirs(self.subject_normalised_directory, exist_ok=True)
 
+        # create folder for FLIRT mat if they do not exist
+        self.subject_FLIRT_mat_directory = self.registered_directory + 'FLIRT_mat/'
+        os.makedirs(self.subject_FLIRT_mat_directory, exist_ok=True)
+
         # if the folders don't exist, create them
         os.makedirs(self.registered_directory , exist_ok=True)
         os.makedirs(self.subject_bias_directory, exist_ok=True)
@@ -98,7 +102,10 @@ class Process3DFLAIR():
         # create variables for the T1 directories
         self.subject_T1_nifti_directory = self.subject_T1_directory + 'original_nifti/'
         self.subject_T1_brain_directory = self.subject_T1_directory + 'brain_nifti/'
+
+
         
+        print("Analysing subject: " + self.subject_id)
         return None
     
     def findDICOMFolder(self, time_point):
@@ -335,6 +342,7 @@ class Process3DFLAIR():
         nifti_file_format = self.subject_nifti_directory + self.subject_id+'_{}_D1.nii.gz'
         brain_file_mask_format = self.subject_brain_directory + 'masks/'+ self.subject_id+'_{}_D1.nii'  
         brain_file_format = self.subject_brain_directory + self.subject_id+'_{}_D1.nii.gz' 
+        affine_file_path_format = self.registered_directory + '/FLIRT_mat/' + self.subject_id+'_{}_D1_flirt.mat'
 
         # specify file names using the above formatting
         extracted_brain = brain_file_format.format(str(extracted_timepoint).zfill(2))
@@ -348,7 +356,18 @@ class Process3DFLAIR():
             rigidRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
             rigidRegister.rigidFslFLIRT(cost_function = 'mutualinfo', interpolation = 'trilinear')
             print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
-        
+
+        if self.registration_method == 'affinefsl': # if we want affine FLIRT 
+            affineRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
+            affineRegister.affineFslFLIRT(cost_function = 'mutualinfo', interpolation = 'trilinear')
+            print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
+
+        if self.registration_method == 'nonlinearfsl': #non-linear fsl. NOTE: this requires affine matrix first (RERUN AFFINE)
+            nonlinearRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
+            affine_file_path = affine_file_path_format.format(str(to_extract_timepoint).zfill(2))
+            nonlinearRegister.nonlinearFslFNIRT(affine_file_path)
+            print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
+
         # extract the brain following registration
         apply_mask_BET = fsl.ApplyMask()
         apply_mask_BET.inputs.in_file = registered_whole_brain
@@ -507,6 +526,17 @@ class Process3DFLAIR():
         return None
     
     def runVariancePipeline(self, out_file):
+        # Requires images to be in NIFTI already
+
+        # Step 1) Extract brain using HD-BET and mask
+        self.extractBrain()
+        # Step 2) Perform bias field correction
+        self.correctBiasField(method = 'FSL')
+        # Step 3) Perform intensity normalisation
+        self.intensityNormalisation(useBiasCorrected = True)
+        # Step 4: Compute variance map
+        self.calcVariance(out_file)
+       
         return None
 
 if __name__ == "__main__":
@@ -520,13 +550,19 @@ if __name__ == "__main__":
     test_total_num_time_points = subject_info_df.Time_Points[2] # auto use all from excel sheet
     
     # select the time points we want to consider in analysis
-    test_time_points_to_consider = [1,2,3,4,5] # for speed and testing the pipeline, only use the first two
+    test_time_points_to_consider = [1,2,3,4,5]# for speed and testing the pipeline, only use the first two
 
     # define the type of registration we'd like to use
-    registration_method = 'rigidfsl'
+    registration_method = 'nonlinearfsl' #'affinefsl'
 
     # initialise a preprocess pipeline based on the test subject
     testProcess3DFLAIR = Process3DFLAIR(test_subject_id, test_total_num_time_points, test_time_points_to_consider, registration_method) 
+
+    # run variance pipeline
+    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/variance_maps/nonlinear/all_timepoints_nonlinear.nii.gz"
+   
+    #testProcess3DFLAIR.runVariancePipeline(out_file)
+    testProcess3DFLAIR.calcVariance(out_file)
 
     # convert all of the temporal scans from DICOM to NIFTI
     #testProcess3DFLAIR.convertDICOMtoNIFTI() #NOTE: Edit this pipeline so that only files are converted if they don't exist
@@ -538,4 +574,4 @@ if __name__ == "__main__":
 
     # correct bias field
     #testProcess3DFLAIR.correctBiasField(method = 'FSL')
-    testProcess3DFLAIR.intensityNormalisation(useBiasCorrected = True)
+    #testProcess3DFLAIR.intensityNormalisation(useBiasCorrected = True)
