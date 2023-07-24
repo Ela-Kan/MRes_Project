@@ -36,12 +36,17 @@ from intensity_normalization.plot.histogram import HistogramPlotter, plot_histog
 
 class Process3DFLAIR():
 
-    def __init__(self, subject_id, total_num_time_points, time_points_to_consider, registration_method) -> None:
+    def __init__(self, all_subject_info, subject_id, total_num_time_points, time_points_to_consider, registration_method, inter_subject = False) -> None:
         """
         Initialises instance of the preprocess3DFLAIR object.
 
         Parameters
         ----------
+
+        all_subject_info : pd.Dataframe
+            dataframe including information on all subjects. contains a column of subject ids and corresponding total number of timeframes. See 
+            documentation for further information
+
         subject_id : str
             string including current subject id. e.g. 'B-RAP_0027'
         
@@ -57,6 +62,10 @@ class Process3DFLAIR():
            Options:
                 rigidfsl: rigid registration using FSL's FLIRT
 
+        inter_subject: bool
+            whether the normalisation should be performed inter or intra subject. default is False. If True,
+            then a list of all subject IDs is required.
+
 
         Returns
         -------
@@ -66,9 +75,11 @@ class Process3DFLAIR():
         
         # Define the global variables to be used throughout the implementations detailed.
         self.subject_id = subject_id # the subject id for the 3D FLAIR to be preprocessed
+        self.all_subject_info = all_subject_info # pandas dataframe of all subject information
         self.total_num_time_points = total_num_time_points # the number of temporal scans for the given subject
         self.time_points_to_consider = time_points_to_consider # the specific scans to analyse
         self.registration_method = registration_method #string including the desired registration method to use
+        self.inter_subject = inter_subject # boolean indicating whether inter- or intra- subject normalisation is desired
 
         # create a folder tree with the appropriate file paths for use throughout this method, as according to accompanying doc
         self.subject_directory_root = '/home/ela/Documents/B-RAPIDD/' + self.subject_id +'/3D-FLAIR/'
@@ -351,6 +362,7 @@ class Process3DFLAIR():
         registered_whole_brain_format = self.registered_directory + self.subject_id+'_{}_D1.nii.gz'
         registered_whole_brain = registered_whole_brain_format.format(str(to_extract_timepoint).zfill(2))
         
+
         # need to register the two time points using desired registration method
         if self.registration_method == 'rigidfsl': # if we want rigid FLIRT 
             rigidRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
@@ -367,7 +379,6 @@ class Process3DFLAIR():
             affine_file_path = affine_file_path_format.format(str(to_extract_timepoint).zfill(2))
             nonlinearRegister.nonlinearFslFNIRT(affine_file_path)
             print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
-
         # extract the brain following registration
         apply_mask_BET = fsl.ApplyMask()
         apply_mask_BET.inputs.in_file = registered_whole_brain
@@ -439,34 +450,80 @@ class Process3DFLAIR():
 
     def intensityNormalisation(self, useBiasCorrected = True):
 
-        # save image paths into a list
-        if useBiasCorrected == True:
-            brain_file_format = self.subject_bias_directory + self.subject_id +'_{}_D1_restore.nii.gz'
-        else:
-            brain_file_format = self.subject_brain_directory + self.subject_id+'_{}_D1.nii.gz'
-        image_paths = [] # initialise variable
-        for i in range(len(self.time_points_to_consider)):
-            current_img_str = str(0)+str(self.time_points_to_consider[i]) # current time point string
-            image_paths.append(brain_file_format.format(current_img_str))
+        if self.inter_subject == False: # if we only want to normalise according to the current subject's data
+            # save image paths into a list
+            if useBiasCorrected == True:
+                brain_file_format = self.subject_bias_directory + self.subject_id +'_{}_D1_restore.nii.gz'
+            else:
+                brain_file_format = self.subject_brain_directory + self.subject_id+'_{}_D1.nii.gz'
+            image_paths = [] # initialise variable
+            for i in range(len(self.time_points_to_consider)):
+                current_img_str = str(0)+str(self.time_points_to_consider[i]) # current time point string
+                image_paths.append(brain_file_format.format(current_img_str))
 
-        # load in images for processing
-        images = [nib.load(image_path).get_fdata() for image_path in image_paths]
+            # load in images for processing
+            images = [nib.load(image_path).get_fdata() for image_path in image_paths]        
 
-        # normalise images
-        nyul_norm = NyulNormalize()
-        nyul_norm.fit(images, modality = Modality.FLAIR)
-        normalized = [nyul_norm(image) for image in images]
-        nyul_norm.save_standard_histogram(self.subject_normalised_directory + "standard_histogram.npy")
-     
-        # show histogram of original and corrected images for validation
-        hp = HistogramPlotter(title="Original Intensities")
-        masks = None
-        _ = hp(images, masks)
-        plt.show()
-        hp = HistogramPlotter(title="Nyul Normalised Intensities")
-        masks = None
-        _ = hp(normalized, masks)
-        plt.show()
+            # normalise images
+            nyul_norm = NyulNormalize()
+            nyul_norm.fit(images, modality = Modality.FLAIR)
+            normalized = [nyul_norm(image) for image in images]
+            nyul_norm.save_standard_histogram(self.subject_normalised_directory + "standard_histogram.npy")
+        
+            # show histogram of original and corrected images for validation
+            hp = HistogramPlotter(title="Original Intensities")
+            masks = None
+            _ = hp(images, masks)
+            plt.show()
+            hp = HistogramPlotter(title="Nyul Normalised Intensities")
+            masks = None
+            _ = hp(normalized, masks)
+            plt.show()
+
+        if self.inter_subject == True: # consider all subjects/multiple subjects for normalisation training, requires bias field correction and registration on all. 
+            bias_corrected_brain_format = '/home/ela/Documents/B-RAPIDD/{}/3D-FLAIR/bias_nifti/{}_{}_D1_restore.nii.gz' #1st and 2nd blank are subject IDS, third is timepoint
+            brain_mask_format = '/home/ela/Documents/B-RAPIDD/{}/3D-FLAIR/brain_nifti/masks/{}_{}_D1.nii'
+            image_paths = [] # initialise variables
+            mask_paths = []
+            image_subject_labels = []
+            # save image and mask paths to a list
+            for i in range(len(self.all_subject_info.Subject_ID[:])): # for all of the subjects in the dataframe, load in all of the brain extracted images
+                current_subject_ID = self.all_subject_info.Subject_ID[i] # extract the current subject's ID
+                for t in range(self.all_subject_info.Time_Points[i]): # for each time point in the current subject's data
+                    # store image paths
+                    current_time_str = str(0)+str(t+1) # current time point string
+                    image_paths.append(bias_corrected_brain_format.format(current_subject_ID, current_subject_ID, current_time_str))
+                    # store mask paths(this will be the same across all brains so repeatedly store the same path t times)
+                    mask_paths.append(brain_mask_format.format(current_subject_ID, current_subject_ID, str(0) + str(self.all_subject_info.Time_Points[i]))) # select the final time point to consider as the mask
+                    # save the corresponding subject labels as a key for the images/positioning of data for a given subject ID
+                    image_subject_labels.append(current_subject_ID)
+
+            # load in images for processing
+            images = [nib.load(image_path).get_fdata() for image_path in image_paths]         
+            # load in masks for processing
+            masks = [nib.load(mask_path).get_fdata() for mask_path in mask_paths]     
+
+            # normalise images 
+            nyul_norm = NyulNormalize()
+            nyul_norm.fit(images, masks, modality = Modality.FLAIR)
+            normalized = [nyul_norm(image) for image in images]
+            nyul_norm.save_standard_histogram(self.subject_normalised_directory + "standard_histogram.npy")   
+
+            # show histogram of original and corrected images for validation
+            hp = HistogramPlotter(title="Original Intensities")
+            _ = hp(images, masks)
+            plt.show()
+            hp = HistogramPlotter(title="Nyul Normalised Intensities")
+            _ = hp(normalized, masks)
+            plt.show()       
+
+            # only retain the desired subject's normalised data for future use
+            current_subject_normalized = []
+            for i, id in enumerate(image_subject_labels):
+                # check if the current ID matches the subject we are considering
+                if id == self.subject_id:
+                    current_subject_normalized.append(normalized[i]) # save the normalised images for the current subject
+            normalized = current_subject_normalized # remove images that we are not currently considering
 
         # save normalised images
         normalised_file_format = self.subject_normalised_directory + self.subject_id+'_{}_D1.nii.gz'
@@ -483,11 +540,11 @@ class Process3DFLAIR():
             reorient.inputs.out_file = normalised_file_format.format(current_img_str)
             res = reorient.run()
 
-    def subtractImages(self, in_image_num, image_to_subtract_num, out_file):
+    def subtractImages(self, in_image_num, image_to_subtract_num, out_file, threshold = True):
         # input = time point flag for images e.g. 1 or 2
 
         # load in the images
-        normalised_file_format = self.subject_normalised_directory + self.subject_id+'_{}_D1.nii.gz'
+        normalised_file_format = self.subject_normalised_directory + '/nonlinear/' + self.subject_id+'_{}_D1.nii.gz'
         in_image_path = normalised_file_format.format(str(in_image_num).zfill(2))
         image_to_subtract_path = normalised_file_format.format(str(image_to_subtract_num).zfill(2))
 
@@ -498,9 +555,15 @@ class Process3DFLAIR():
         # subtract images
         subtraction_img = in_image - image_to_subtract
 
+        # if we want to create a threshold image
+        if threshold == True:
+            subtraction_img[subtraction_img < 0] = 0
+
         # save subtraction image
         sub_nifti = nib.Nifti1Image(subtraction_img, affine=np.eye(4))
         nib.save(sub_nifti, out_file)
+
+        print('Subtracted point ' + str(image_to_subtract_num) + ' from ' + str(in_image_num))
         
         return None
     
@@ -557,13 +620,15 @@ class Process3DFLAIR():
         # Requires images to be in NIFTI already
 
         # Step 1) Extract brain using HD-BET and mask
-        self.extractBrain()
+        #self.extractBrain()
         # Step 2) Perform bias field correction
-        self.correctBiasField(method = 'FSL')
+        #self.correctBiasField(method = 'FSL')
         # Step 3) Perform intensity normalisation
         self.intensityNormalisation(useBiasCorrected = True)
         # Step 4: Compute variance map
         self.calcVariance(out_file)
+
+        print('Completed variance map')
        
         return None
 
@@ -574,23 +639,38 @@ if __name__ == "__main__":
     print(subject_info_df) # print current subject info
 
     # select a test patient from the information list
-    test_subject_id = subject_info_df.Subject_ID[0]
-    test_total_num_time_points = subject_info_df.Time_Points[0] # auto use all from excel sheet
+    test_subject_id = subject_info_df.Subject_ID[1]
+    test_total_num_time_points = subject_info_df.Time_Points[1] # auto use all from excel sheet
     
     # select the time points we want to consider in analysis
-    test_time_points_to_consider = [1,2,3,4,5,6,7]# for speed and testing the pipeline, only use the first two
+    test_time_points_to_consider = [1,2,3,4,5]# for speed and testing the pipeline, only use the first two
 
     # define the type of registration we'd like to use
-    registration_method = 'affinefsl'
+    registration_method = 'rigidfsl'
 
     # initialise a preprocess pipeline based on the test subject
-    testProcess3DFLAIR = Process3DFLAIR(test_subject_id, test_total_num_time_points, test_time_points_to_consider, registration_method) 
+    testProcess3DFLAIR = Process3DFLAIR(subject_info_df, test_subject_id, test_total_num_time_points, test_time_points_to_consider, registration_method, inter_subject = True) 
 
+    
     # run variance pipeline
-    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0027/3D-FLAIR/variance_maps/affine/all_timepoints_affine.nii.gz"
+    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0027/3D-FLAIR/variance_maps/rigid/intersubnormalised_all_timepoints_affine.nii.gz"
    
     testProcess3DFLAIR.runVariancePipeline(out_file)
-    #testProcess3DFLAIR.calcVariance(out_file)
+    #testProcess3DFLAIR.calcVariance(out_file) # use this if all of the preprocessing has already occurred
+
+     
+
+    """
+    # run subtraction
+    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/rubbish.nii.gz"
+
+    # minus non-ARIA from ARIA
+    in_image_num = 3
+    image_to_subtract_num = 1
+    #testProcess3DFLAIR.subtractImages(in_image_num, image_to_subtract_num, out_file, threshold = True)
+    testProcess3DFLAIR.runSubtraction(in_image_num, image_to_subtract_num, out_file)
+
+    """
 
     # convert all of the temporal scans from DICOM to NIFTI
     #testProcess3DFLAIR.convertDICOMtoNIFTI() #NOTE: Edit this pipeline so that only files are converted if they don't exist
