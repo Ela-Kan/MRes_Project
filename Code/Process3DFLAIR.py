@@ -632,7 +632,7 @@ class Process3DFLAIR():
        
         return None
     
-    def calcSlope(x1,x2,y1,y2):
+    def calcSlope(self,x1,x2,y1,y2):
             
             gradient = (y2 - y1) /  (x2-x1)
             
@@ -663,7 +663,6 @@ class Process3DFLAIR():
         gradient_indices_list = []
 
         for i in range (1,len(self.time_points_to_consider)):
-            print(i)
             # calculate edge case
             if i == 1 or i == len(self.time_points_to_consider) - 1:
                 gradient_indices_list.append([i,i+1])
@@ -732,7 +731,7 @@ class Process3DFLAIR():
                                             continue
                                         else:
                                             # set y 'array', i.e. intensities
-                                            y = [lower_bound_img, mid_img, upper_bound_img]
+                                            y = [lower_bound_img[i,j,k], mid_img[i,j,k], upper_bound_img[i,j,k]]
                                             # set x 'array' i.e. time points in days
                                             x = [lower_bound_days, mid_num_days, upper_bound_days]
                                             # use polyfit to fit linear polynomial to points and extract the gradient
