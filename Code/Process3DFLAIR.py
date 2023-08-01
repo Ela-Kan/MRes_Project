@@ -368,17 +368,18 @@ class Process3DFLAIR():
             rigidRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
             rigidRegister.rigidFslFLIRT(cost_function = 'mutualinfo', interpolation = 'trilinear')
             print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
-
+        """
         if self.registration_method == 'affinefsl': # if we want affine FLIRT 
             affineRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
             affineRegister.affineFslFLIRT(cost_function = 'mutualinfo', interpolation = 'trilinear')
             print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
-
+        """
         if self.registration_method == 'nonlinearfsl': #non-linear fsl. NOTE: this requires affine matrix first (RERUN AFFINE)
             nonlinearRegister = rg.Registration(reference_path = extracted_brain, target_path = brain_to_extract, out_path = registered_whole_brain)
             affine_file_path = affine_file_path_format.format(str(to_extract_timepoint).zfill(2))
             nonlinearRegister.nonlinearFslFNIRT(affine_file_path)
             print('Registered time point '+ str(to_extract_timepoint) + ' to ' + str(extracted_timepoint))
+        
         # extract the brain following registration
         apply_mask_BET = fsl.ApplyMask()
         apply_mask_BET.inputs.in_file = registered_whole_brain
@@ -620,7 +621,7 @@ class Process3DFLAIR():
         # Requires images to be in NIFTI already
 
         # Step 1) Extract brain using HD-BET and mask
-        self.extractBrain()
+        ##self.extractBrain()
         # Step 2) Perform bias field correction
         self.correctBiasField(method = 'FSL')
         # Step 3) Perform intensity normalisation
@@ -742,6 +743,60 @@ class Process3DFLAIR():
             grad_nifti = nib.Nifti1Image(gradient_map, affine=np.eye(4))
             nib.save(grad_nifti, gradient_map_file_format.format(str(map_num)))
             print('Computed map ' + str(map_num) + ' out of ' + str(number_grad_maps))
+
+    def calcZScoreMap(self, in_map_path, z_score_out_file, significant_z_out_file):
+         # load in the designated map to compute the Z-score for and the brain mask 
+        map_nifti = nib.load(in_map_path).get_fdata()  
+        brain_file_mask_format = self.subject_brain_directory + 'masks/'+ self.subject_id+'_{}_D1.nii'  
+        mask_path = brain_file_mask_format.format(str(self.time_points_to_consider[-1]).zfill(2)) # the mask is always the last time point's BET
+        mask = nib.load(mask_path).get_fdata()   
+
+        # flatten the map_nifti and the mask
+        flat_map = map_nifti.flatten()
+        flat_mask = mask.flatten()
+        flat_mask_bool = [not not x for x in flat_mask] # convert np.array to boolean for indexing
+
+        # only retain the brain values from the flat map
+        flat_map_brain = flat_map[flat_mask_bool]
+
+        # compute mean and standard deviation of sample
+        mu = np.mean(flat_map_brain)
+        stdev = np.std(flat_map_brain)
+
+        # preallocate Z-Score map image
+        Z_score_map = np.zeros(map_nifti.shape)
+
+        # also create a map retaining only the 'significant change (i.e. 2 std deviations away from 0)
+        significant_Z_score_map = np.zeros(map_nifti.shape)
+
+        # go through all points in the two images to compute the Z-score
+        # iterate through each 'voxel' in the images
+        for i in range(Z_score_map.shape[0]):
+                for j in range(Z_score_map.shape[1]):
+                        for k in range(Z_score_map.shape[2]):
+                                # if the mask says that there is no brain here, continue to next voxel
+                                if mask[i,j,k] == 0:
+                                    continue
+                                else:
+                                    z_score = (map_nifti[i,j,k] - mu)/stdev
+                                    Z_score_map[i,j,k] = z_score
+
+                                    if (z_score > 2) or (z_score <-2):
+                                         significant_Z_score_map[i,j,k] = z_score
+                                    else: 
+                                         significant_Z_score_map[i,j,k] = 0
+                
+        # save the Z-score maps
+        Z_score_nifti = nib.Nifti1Image(Z_score_map, affine=np.eye(4))
+        significant_Z_score_nifti = nib.Nifti1Image(significant_Z_score_map, affine=np.eye(4))
+        nib.save(Z_score_nifti, z_score_out_file)
+        nib.save(significant_Z_score_nifti, significant_z_out_file)
+        print('Computed Z-Score map')
+
+        return None
+
+
+
             
 
 if __name__ == "__main__":
@@ -751,14 +806,14 @@ if __name__ == "__main__":
     print(subject_info_df) # print current subject info
 
     # select a test patient from the information list
-    test_subject_id = subject_info_df.Subject_ID[1]
-    test_total_num_time_points = subject_info_df.Time_Points[1] # auto use all from excel sheet
+    test_subject_id = subject_info_df.Subject_ID[2]
+    test_total_num_time_points = subject_info_df.Time_Points[2] # auto use all from excel sheet
     
     # select the time points we want to consider in analysis
-    test_time_points_to_consider = [1,2,3,4,5]
+    test_time_points_to_consider = [1,2,3]
 
     # define the type of registration we'd like to use
-    registration_method = 'nonlinearfsl'
+    registration_method = 'rigidfsl'
 
     # we want to normalise across all patients
     inter_subject = True
@@ -768,36 +823,51 @@ if __name__ == "__main__":
     
     """
     # run variance pipeline
-    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/variance_maps/nonlinear/intersubnormalised_all_timepoints_nonlinear.nii.gz"
+    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/variance_maps/affine/intersubnormalised_all_timepoints_rigid.nii.gz"
    
-    testProcess3DFLAIR.runVariancePipeline(out_file)
-    #testProcess3DFLAIR.calcVariance(out_file) # use this if all of the preprocessing has already occurred
+    #testProcess3DFLAIR.runVariancePipeline(out_file)
+    testProcess3DFLAIR.calcVariance(out_file) # use this if all of the preprocessing has already occurred
     
-     
     """
+    
     
     """
     # run subtraction
-    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/subtraction_maps/nonlinear/2_minus_1.nii.gz"
+    out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/subtraction_maps/affine/intersubject_normalised/5_minus_4.nii.gz"
 
     # minus non-ARIA from ARIA
-    in_image_num = 2 #3
-    image_to_subtract_num = 1 #1
+    in_image_num = 5 #3
+    image_to_subtract_num = 4 #1
     testProcess3DFLAIR.subtractImages(in_image_num, image_to_subtract_num, out_file, threshold = False)
     #testProcess3DFLAIR.runSubtraction(in_image_num, image_to_subtract_num, out_file)
     
     """
 
+    """
     # run gradient map calculation
-    out_folder = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/gradient_maps/"
+    out_folder = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/gradient_maps/"
     days_between_scans = [0, 29, 58, 88, 118]
     testProcess3DFLAIR.calcGradientMaps(out_folder, days_between_scans)
 
-    # convert all of the temporal scans from DICOM to NIFTI
-    #testProcess3DFLAIR.convertDICOMtoNIFTI() #NOTE: Edit this pipeline so that only files are converted if they don't exist
+    """
 
+    # run z-score map calculation for the variance and gradient maps
+    z_score_out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/variance_z_score_map_rigid.nii.gz" # variance 
+    significant_z_out_file  = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/significant_variance_z_score_map_rigid.nii.gz" 
+    in_map_path = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/variance_maps/rigid/intersubnormalised_all_timepoints_rigid.nii.gz"
+    testProcess3DFLAIR.calcZScoreMap(in_map_path, z_score_out_file, significant_z_out_file)
+
+    z_score_out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/gradient_z_score_map_rigid.nii.gz" # gradient
+    significant_z_out_file  = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/significant_gradient_z_score_map_rigid.nii.gz" 
+    in_map_path = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/gradient_maps/B-RAP_0028_map_2.nii.gz"
+    testProcess3DFLAIR.calcZScoreMap(in_map_path, z_score_out_file, significant_z_out_file)
+
+    
+
+    # convert all of the temporal scans from DICOM to NIFTI
+    #testProcess3DFLAIR.convertDICOMtoNIFTI() #
+    
     # extract brains
-   # testProcess3DFLAIR.extractBrainNIFTI(useT1 = False)
     #testProcess3DFLAIR.extractBrain()
   
 
