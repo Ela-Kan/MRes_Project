@@ -744,7 +744,7 @@ class Process3DFLAIR():
             nib.save(grad_nifti, gradient_map_file_format.format(str(map_num)))
             print('Computed map ' + str(map_num) + ' out of ' + str(number_grad_maps))
 
-    def calcZScoreMap(self, in_map_path, z_score_out_file, significant_z_out_file):
+    def calcZScoreMap(self, in_map_path, z_score_out_file, significant_z_out_file, inter_subject_files = [], inter_subject_mask_files = []):
          # load in the designated map to compute the Z-score for and the brain mask 
         map_nifti = nib.load(in_map_path).get_fdata()  
         brain_file_mask_format = self.subject_brain_directory + 'masks/'+ self.subject_id+'_{}_D1.nii'  
@@ -758,8 +758,21 @@ class Process3DFLAIR():
 
         # only retain the brain values from the flat map
         flat_map_brain = flat_map[flat_mask_bool]
+        
 
-        # compute mean and standard deviation of sample
+        # if we have intersubject distribution consideration, we need to add these intensities to the flattened array
+        if len(inter_subject_files): # if the input isn't empty
+            print('Considering multiple subjects in distribution.')
+            for i in range(len(inter_subject_files)): # for all of the other subjects, load in their image and mask
+                flat_current_image = nib.load(inter_subject_files[i]).get_fdata().flatten()
+                flat_current_mask = nib.load(inter_subject_mask_files[i]).get_fdata().flatten()
+                flat_current_mask_bool = [not not x for x in flat_current_mask] # convert np.array to boolean for indexing
+                flat_current_brain = flat_current_image[flat_current_mask_bool]
+                # pool the current extracted brain into the intensity list for the flat brains
+                flat_map_brain = np.append(flat_map_brain, flat_current_brain)
+
+
+        # compute mean and standard deviation of sample dependent on the desired distribution
         mu = np.mean(flat_map_brain)
         stdev = np.std(flat_map_brain)
 
@@ -781,7 +794,7 @@ class Process3DFLAIR():
                                     z_score = (map_nifti[i,j,k] - mu)/stdev
                                     Z_score_map[i,j,k] = z_score
 
-                                    if (z_score > 2) or (z_score <-2):
+                                    if (z_score > 2) or (z_score <-2): # if the z_score is significant, i.e. 2 stdevs away
                                          significant_Z_score_map[i,j,k] = z_score
                                     else: 
                                          significant_Z_score_map[i,j,k] = 0
@@ -796,7 +809,6 @@ class Process3DFLAIR():
         return None
 
 
-
             
 
 if __name__ == "__main__":
@@ -806,11 +818,11 @@ if __name__ == "__main__":
     print(subject_info_df) # print current subject info
 
     # select a test patient from the information list
-    test_subject_id = subject_info_df.Subject_ID[2]
-    test_total_num_time_points = subject_info_df.Time_Points[2] # auto use all from excel sheet
+    test_subject_id = subject_info_df.Subject_ID[1]
+    test_total_num_time_points = subject_info_df.Time_Points[1] # auto use all from excel sheet
     
     # select the time points we want to consider in analysis
-    test_time_points_to_consider = [1,2,3]
+    test_time_points_to_consider = [1,2,3,4,5]
 
     # define the type of registration we'd like to use
     registration_method = 'rigidfsl'
@@ -852,15 +864,18 @@ if __name__ == "__main__":
     """
 
     # run z-score map calculation for the variance and gradient maps
-    z_score_out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/variance_z_score_map_rigid.nii.gz" # variance 
-    significant_z_out_file  = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/significant_variance_z_score_map_rigid.nii.gz" 
-    in_map_path = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/variance_maps/rigid/intersubnormalised_all_timepoints_rigid.nii.gz"
-    testProcess3DFLAIR.calcZScoreMap(in_map_path, z_score_out_file, significant_z_out_file)
+    z_score_out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/z_score_maps/variance_z_score_map_rigid.nii.gz" # variance 
+    significant_z_out_file  = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/z_score_maps/significant_variance_z_score_map_rigid.nii.gz" 
+    in_map_path = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/variance_maps/rigid/intersubnormalised_all_timepoints_rigid.nii.gz"
+    inter_subject_files = ["/home/ela/Documents/B-RAPIDD/B-RAP_0027/3D-FLAIR/variance_maps/rigid/intersubnormalised_all_timepoints_rigid.nii.gz","/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/variance_maps/rigid/intersubnormalised_all_timepoints_rigid.nii.gz"]
+    inter_subject_mask_files = ["/home/ela/Documents/B-RAPIDD/B-RAP_0027/3D-FLAIR/brain_nifti/masks/B-RAP_0027_07_D1.nii", "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/brain_nifti/masks/B-RAP_0028_03_D1.nii"]
+    testProcess3DFLAIR.calcZScoreMap(in_map_path, z_score_out_file, significant_z_out_file, inter_subject_files, inter_subject_mask_files)
 
-    z_score_out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/gradient_z_score_map_rigid.nii.gz" # gradient
-    significant_z_out_file  = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/z_score_maps/significant_gradient_z_score_map_rigid.nii.gz" 
-    in_map_path = "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/gradient_maps/B-RAP_0028_map_2.nii.gz"
-    testProcess3DFLAIR.calcZScoreMap(in_map_path, z_score_out_file, significant_z_out_file)
+    z_score_out_file = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/z_score_maps/gradient_z_score_map_rigid.nii.gz" # gradient
+    significant_z_out_file  = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/z_score_maps/significant_gradient_z_score_map_rigid.nii.gz" 
+    in_map_path = "/home/ela/Documents/B-RAPIDD/B-RAP_0100/3D-FLAIR/gradient_maps/B-RAP_0100_map_2.nii.gz"
+    inter_subject_files = ["/home/ela/Documents/B-RAPIDD/B-RAP_0027/3D-FLAIR/gradient_maps/B-RAP_0027_map_2.nii.gz", "/home/ela/Documents/B-RAPIDD/B-RAP_0028/3D-FLAIR/gradient_maps/B-RAP_0028_map_2.nii.gz"]
+    testProcess3DFLAIR.calcZScoreMap(in_map_path, z_score_out_file, significant_z_out_file, inter_subject_files, inter_subject_mask_files)
 
     
 
